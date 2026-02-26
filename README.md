@@ -12,10 +12,9 @@ It snapshots current storage health, compares with last snapshot, and sends emai
 - `lsblk` device overview
 - `smartctl -H` quick SMART health (if smartctl exists)
 
-## Scripts
+## Script
 
 - `raid-health-monitor.sh`
-- `polymarket-dashboard`
 
 ## Configure
 
@@ -61,16 +60,6 @@ You need at least one of:
 
 - `mail` command (`mailx`), or
 - `sendmail`
-
-## Polymarket dashboard quick usage
-
-```bash
-chmod +x polymarket-dashboard
-./polymarket-dashboard --help
-./polymarket-dashboard --top 20
-./polymarket-dashboard --top 20 --category crypto
-./polymarket-dashboard --top 20 --movers --min-24h-vol 100k
-```
 
 ## Notes
 
