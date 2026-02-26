@@ -12,9 +12,10 @@ It snapshots current storage health, compares with last snapshot, and sends emai
 - `lsblk` device overview
 - `smartctl -H` quick SMART health (if smartctl exists)
 
-## Script
+## Scripts
 
 - `raid-health-monitor.sh`
+- `polymarket-dashboard`
 
 ## Configure
 
@@ -61,9 +62,19 @@ You need at least one of:
 - `mail` command (`mailx`), or
 - `sendmail`
 
+## Polymarket dashboard quick usage
+
+```bash
+chmod +x polymarket-dashboard
+./polymarket-dashboard --help
+./polymarket-dashboard --top 20
+./polymarket-dashboard --top 20 --category crypto
+./polymarket-dashboard --top 20 --movers --min-24h-vol 100k
+```
+
 ## Notes
 
-- The script alerts on **any snapshot difference**, so timestamp/content changes can trigger email.
+- The RAID monitor alerts on **any snapshot difference**, so timestamp/content changes can trigger email.
 - If you want a quieter version (ignore timestamp-only changes), adapt the snapshot comparison section.
 
 ## Quick test for alert

@@ -1,0 +1,383 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TOP=10
+FETCH=40
+MODE="volume"   # volume | newest | movers | balanced
+CATEGORY=""
+MIN24=""
+FORCE_COLOR_FLAG=""
+NO_COLOR_FLAG=""
+
+show_help() {
+  cat <<'EOF'
+polymarket-dashboard
+
+Usage:
+  polymarket-dashboard [options]
+
+Options:
+  -t, --top N            Rows to display (default: 10)
+  -f, --fetch N          Events to fetch before ranking (default: 40)
+  -n, --newest           Sort by newest events (instead of volume)
+  -m, --movers           Sort by biggest |Δ24h| movers (from sub-markets)
+  -b, --balanced         Sort by most balanced events (closest to 50¢ in #1..#4)
+      --min-24h-vol X    Keep only events with 24h volume >= X (e.g. 100k, 1m)
+  -c, --category TAG     Filter by category/tag (e.g. politics, crypto, sports, pop, gaming)
+      --force-color      Force ANSI colors even in non-tty/watch
+      --no-color         Disable colors
+  -h, --help             Show this help
+
+Examples:
+  polymarket-dashboard
+  polymarket-dashboard --top 20
+  polymarket-dashboard --top 50 --fetch 120
+  polymarket-dashboard --top 50 --newest
+  polymarket-dashboard --top 20 --movers
+  polymarket-dashboard --top 20 --balanced
+  polymarket-dashboard --top 20 --balanced --min-24h-vol 100k
+  polymarket-dashboard --top 20 --movers --min-24h-vol 100k
+  polymarket-dashboard --top 20 --movers --min-24h-vol 1m
+  polymarket-dashboard --top 20 --category politics
+  polymarket-dashboard --top 20 --category crypto
+  polymarket-dashboard --top 20 --category sports
+  polymarket-dashboard --top 20 --category gaming
+  FORCE_COLOR=1 watch -c -n 10 polymarket-dashboard --top 20
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -t|--top)
+      TOP="${2:-}"; shift 2 ;;
+    -f|--fetch)
+      FETCH="${2:-}"; shift 2 ;;
+    -n|--newest)
+      MODE="newest"; shift ;;
+    -c|--category)
+      CATEGORY="${2:-}"; shift 2 ;;
+    -m|--movers)
+      MODE="movers"; shift ;;
+    -b|--balanced)
+      MODE="balanced"; shift ;;
+    --min-24h-vol)
+      MIN24="${2:-}"; shift 2 ;;
+    --force-color)
+      FORCE_COLOR_FLAG="1"; shift ;;
+    --no-color)
+      NO_COLOR_FLAG="1"; shift ;;
+    -h|--help)
+      show_help; exit 0 ;;
+    *)
+      echo "Unknown arg: $1" >&2
+      show_help
+      exit 1 ;;
+  esac
+done
+
+if ! command -v polymarket >/dev/null 2>&1; then
+  echo "polymarket CLI not found."
+  exit 1
+fi
+
+# validate ints
+[[ "$TOP" =~ ^[0-9]+$ ]] || { echo "--top must be integer"; exit 1; }
+[[ "$FETCH" =~ ^[0-9]+$ ]] || { echo "--fetch must be integer"; exit 1; }
+(( FETCH < TOP )) && FETCH=$TOP
+
+TMP_EVENTS="$(mktemp)"
+ORDER="volume"
+if [[ "$MODE" == "newest" ]]; then
+  ORDER="created_at"
+fi
+CMD=(polymarket -o json events list --active true --closed false --order "$ORDER" --limit "$FETCH")
+if [[ -n "$CATEGORY" ]]; then
+  CMD+=(--tag "$CATEGORY")
+fi
+"${CMD[@]}" > "$TMP_EVENTS"
+
+# Export color mode hints for python
+if [[ -n "$FORCE_COLOR_FLAG" ]]; then export FORCE_COLOR=1; fi
+if [[ -n "$NO_COLOR_FLAG" ]]; then export NO_COLOR=1; fi
+
+python3 - "$TMP_EVENTS" "$TOP" "$MODE" "$CATEGORY" "$MIN24" <<'PY'
+import json, sys, subprocess, datetime, textwrap, shutil, os, re
+
+events_path = sys.argv[1]
+show_n = int(sys.argv[2])
+mode = sys.argv[3]
+category = sys.argv[4].strip().lower()
+min24_raw = (sys.argv[5] if len(sys.argv) > 5 else '').strip().lower()
+
+# --- helpers ---
+def f(x, d=0.0):
+    try: return float(x)
+    except: return d
+
+def money(x):
+    x=f(x)
+    if x>=1_000_000_000: return f'${x/1_000_000_000:.1f}B'
+    if x>=1_000_000: return f'${x/1_000_000:.1f}M'
+    if x>=1_000: return f'${x/1_000:.1f}K'
+    return f'${x:.0f}'
+
+def prc(prob):
+    return f'{prob*100:.0f}¢'
+
+def dpp(v):
+    return v*100.0
+
+def short(s,w):
+    return textwrap.shorten(str(s), width=max(8,w), placeholder='…')
+
+def parse_ts(e):
+    for k in ("updatedAt", "createdAt", "creationDate", "startDate", "endDate"):
+        v = e.get(k)
+        if not v:
+            continue
+        try:
+            return datetime.datetime.fromisoformat(v.replace('Z','+00:00')).timestamp()
+        except Exception:
+            pass
+    return 0.0
+
+def parse_amount(s: str) -> float:
+    s = (s or '').strip().lower().replace(',', '')
+    if not s:
+        return 0.0
+    mult = 1.0
+    if s.endswith('k'):
+        mult = 1_000.0; s = s[:-1]
+    elif s.endswith('m'):
+        mult = 1_000_000.0; s = s[:-1]
+    elif s.endswith('b'):
+        mult = 1_000_000_000.0; s = s[:-1]
+    try:
+        return float(s) * mult
+    except Exception:
+        return 0.0
+
+# Color handling
+force_color = os.environ.get('FORCE_COLOR', '').lower() in ('1','true','yes','on')
+no_color = os.environ.get('NO_COLOR') is not None
+use_color = (force_color or (sys.stdout.isatty() and os.environ.get('TERM','') != 'dumb')) and not no_color
+RESET='\033[0m' if use_color else ''
+GREEN='\033[32m' if use_color else ''
+RED='\033[31m' if use_color else ''
+GRAY='\033[90m' if use_color else ''
+YELLOW='\033[33m' if use_color else ''
+DIM='\033[2m' if use_color else ''
+
+ansi_re = re.compile(r'\x1b\[[0-9;]*m')
+def vlen(s: str) -> int:
+    return len(ansi_re.sub('', str(s)))
+
+def pad_cell(s: str, width: int, align='left') -> str:
+    s = str(s)
+    n = vlen(s)
+    if n >= width:
+        return s
+    spaces = ' ' * (width - n)
+    return (spaces + s) if align == 'right' else (s + spaces)
+
+def color_delta(v):
+    t = f"+{v:.1f}" if v > 0 else (f"{v:.1f}" if v < 0 else "0.0")
+    if not use_color:
+        return t
+    if v > 0: return f"{GREEN}{t}{RESET}"
+    if v < 0: return f"{RED}{t}{RESET}"
+    return f"{GRAY}{t}{RESET}"
+
+def color_vol(t):
+    return f"{YELLOW}{t}{RESET}" if use_color else t
+
+def smart_label(s):
+    s = str(s or '').strip().replace('|', ' ').replace('¦', ' ')
+    if not s: return '-'
+    m = re.match(r'^(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),\s*(\d{4})$', s)
+    if m:
+        mon = m.group(1)[:3]
+        day = m.group(2)
+        yr = m.group(3)[2:]
+        s = f"{mon} {day} '{yr}"
+    else:
+        s = re.sub(r'\s+', ' ', s)
+        s = re.sub(r'[^\w\-\$ ]+', ' ', s).strip()
+        s = ' '.join(s.split()[:3])
+    return short(s, 11)
+
+def cell_plain(prob, ch):
+    p = prc(prob)
+    d = dpp(ch)
+    ds = f"+{d:.1f}" if d > 0 else (f"{d:.1f}" if d < 0 else "0.0")
+    return f"{p:>4} {ds:>6}", d
+
+def colorize_cell(plain, d):
+    if not use_color:
+        return plain
+    ds = f"+{d:.1f}" if d > 0 else (f"{d:.1f}" if d < 0 else "0.0")
+    c = GREEN if d > 0 else RED if d < 0 else GRAY
+    return plain.replace(ds, f"{c}{ds}{RESET}")
+
+# load events
+raw = json.load(open(events_path, 'r', encoding='utf-8', errors='ignore'))
+events = raw.get('data', []) if isinstance(raw, dict) else raw if isinstance(raw, list) else []
+if not events:
+    print('No active events returned.')
+    raise SystemExit(0)
+
+# Category filtering is handled directly by CLI --tag.
+
+# optional 24h volume filter
+min24 = parse_amount(min24_raw)
+if min24 > 0:
+    events = [e for e in events if f(e.get('volume24hr', 0.0)) >= min24]
+
+# helper to fetch + parse sub-markets (cached)
+detail_cache = {}
+def event_top_markets(eid: str):
+    if eid in detail_cache:
+        return detail_cache[eid]
+    mkts = []
+    try:
+        ej = json.loads(subprocess.check_output(['polymarket','-o','json','events','get',eid], text=True, stderr=subprocess.DEVNULL))
+        mkts = ej.get('markets', [])
+    except Exception:
+        detail_cache[eid] = []
+        return []
+
+    parsed = []
+    for m in mkts:
+        label = m.get('groupItemTitle') or m.get('question') or m.get('slug') or 'N/A'
+        prices = m.get('outcomePrices') or ["0","1"]
+        if isinstance(prices, str):
+            try: prices = json.loads(prices)
+            except: prices = ["0","1"]
+        yes = f(prices[0], 0.0) if isinstance(prices,(list,tuple)) and len(prices)>0 else 0.0
+        ch = f(m.get('oneDayPriceChange', 0.0), 0.0)
+        vol = f(m.get('volumeNum', m.get('volume', 0)), 0.0)
+        parsed.append({'label': label, 'yes': yes, 'ch': ch, 'vol': vol})
+    # Better ranking for #1..#4: highest probability first (then liquidity/move)
+    parsed.sort(key=lambda x: (x['yes'], x['vol'], abs(x['ch'])), reverse=True)
+    detail_cache[eid] = parsed
+    return parsed
+
+# sorting
+if mode == 'newest':
+    events_sorted = sorted(events, key=parse_ts, reverse=True)
+elif mode == 'movers':
+    scored = []
+    for e in events:
+        eid = str(e.get('id'))
+        parsed = event_top_markets(eid)
+        move = max((abs(dpp(x.get('ch', 0.0))) for x in parsed[:4]), default=0.0)
+        scored.append((move, e))
+    scored.sort(key=lambda t: t[0], reverse=True)
+    events_sorted = [e for _, e in scored]
+elif mode == 'balanced':
+    scored = []
+    for e in events:
+        eid = str(e.get('id'))
+        parsed = event_top_markets(eid)
+        # lower distance to 0.5 is better; use best among top4 then avg as tie-break
+        probs = [f(x.get('yes', 0.0)) for x in parsed[:4]]
+        if not probs:
+            score = 1e9
+            avgdist = 1e9
+        else:
+            dists = [abs(p - 0.5) for p in probs]
+            score = min(dists)
+            avgdist = sum(dists)/len(dists)
+        scored.append((score, avgdist, -f(e.get('volume24hr',0.0)), e))
+    scored.sort(key=lambda t: (t[0], t[1], t[2]))
+    events_sorted = [e for *_, e in scored]
+else:
+    events_sorted = sorted(events, key=lambda e: f(e.get('volumeNum', e.get('volume', 0))), reverse=True)
+
+selected = events_sorted[:show_n]
+rows = []
+for e in selected:
+    eid = str(e.get('id'))
+    title = e.get('title') or e.get('question') or e.get('slug') or f'Event {eid}'
+    parsed = event_top_markets(eid)
+    top4 = parsed[:4]
+
+    rows.append({
+        'event': title,
+        'vol': f(e.get('volumeNum', e.get('volume', 0))),
+        'v24': f(e.get('volume24hr', 0.0)),
+        'top': top4
+    })
+
+# widths
+term_w = shutil.get_terminal_size((150, 30)).columns
+w_idx = 2
+w_vol = 10
+w_v24 = 10
+w_c = 24
+fixed = 9 + 8 + w_idx + w_vol + w_v24 + 4*w_c
+w_event = max(20, min(52, term_w - fixed))
+
+def bar(char='-'):
+    return '+' + char*(w_idx+2) + '+' + char*(w_event+2) + '+' + char*(w_vol+2) + '+' + char*(w_v24+2) + '+' + char*(w_c+2) + '+' + char*(w_c+2) + '+' + char*(w_c+2) + '+' + char*(w_c+2) + '+'
+
+def row(cols):
+    out = '|'
+    for text, width, align in cols:
+        out += ' ' + pad_cell(text, width, align) + ' |'
+    return out
+
+def subhdr(i):
+    # move Prc Δ24h to right inside header cell
+    left = f"#{i}"
+    right = "Prc Δ24h"
+    return f"{left:<4}{right:>{w_c-4}}"
+
+print(datetime.datetime.now().strftime('%Y-%m-%d %H:%M'))
+mode_txt = 'newest' if mode == 'newest' else ('movers' if mode == 'movers' else ('balanced' if mode == 'balanced' else 'top volume'))
+cat_txt = f" | category={category}" if category else ''
+min24_txt = f" | min24>={min24_raw}" if min24_raw else ''
+print(f"Legend: Vol=Total | 24hVol=last24h | mode={mode_txt}{cat_txt}{min24_txt}")
+print('In #1-#4: label left, Prc Δ24h right')
+print('Δ24h: + up, - down, 0.0 unchanged')
+print(bar('='))
+print(row([
+    ('#', w_idx, 'left'),
+    ('Event', w_event, 'left'),
+    ('Vol', w_vol, 'right'),
+    ('24hVol', w_v24, 'right'),
+    (subhdr(1), w_c, 'left'),
+    (subhdr(2), w_c, 'left'),
+    (subhdr(3), w_c, 'left'),
+    (subhdr(4), w_c, 'left'),
+]))
+print(bar('='))
+
+for i, r in enumerate(rows, 1):
+    top = r['top']
+    merged = []
+    for k in range(4):
+        if k < len(top):
+            lbl = smart_label(top[k].get('label','-'))
+            plain, d = cell_plain(top[k]['yes'], top[k]['ch'])
+            right = colorize_cell(f"{plain:>11}", d)
+            left = f"{DIM}{lbl:<11}{RESET}" if use_color else f"{lbl:<11}"
+            merged.append(left + right)
+        else:
+            merged.append('-')
+
+    print(row([
+        (str(i), w_idx, 'left'),
+        (short(r['event'], w_event), w_event, 'left'),
+        (color_vol(money(r['vol'])), w_vol, 'right'),
+        (color_vol(money(r['v24'])), w_v24, 'right'),
+        (merged[0], w_c, 'left'),
+        (merged[1], w_c, 'left'),
+        (merged[2], w_c, 'left'),
+        (merged[3], w_c, 'left'),
+    ]))
+
+print(bar('='))
+PY
+
+rm -f "$TMP_EVENTS"
