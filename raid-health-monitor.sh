@@ -2,23 +2,74 @@
 set -euo pipefail
 
 # ====== CONFIG ======
-STATE_DIR="/var/lib/raid-health-monitor"
-STATE_FILE="$STATE_DIR/last_state.txt"
-TMP_FILE="$(mktemp)"
+STATE_DIR="${STATE_DIR:-/var/lib/raid-health-monitor}"
+STATE_FILE="${STATE_FILE:-$STATE_DIR/last_state.txt}"
+RAW_FILE="${RAW_FILE:-$STATE_DIR/last_raw_snapshot.txt}"
+LOG_FILE="${LOG_FILE:-$STATE_DIR/runs.jsonl}"
+ALERT_BODY_FILE="${ALERT_BODY_FILE:-$STATE_DIR/last_alert_body.txt}"
 HOSTNAME_FQDN="$(hostname -f 2>/dev/null || hostname)"
-MAIL_TO="you@example.com"
-MAIL_FROM="raid-monitor@$HOSTNAME_FQDN"
-SUBJECT_PREFIX="[RAID ALERT]"
+MAIL_TO="${MAIL_TO:-you@example.com}"
+MAIL_FROM="${MAIL_FROM:-raid-monitor@$HOSTNAME_FQDN}"
+SUBJECT_PREFIX="${SUBJECT_PREFIX:-[RAID ALERT]}"
 # ====================
 
 mkdir -p "$STATE_DIR"
 
+TMP_DIR="$(mktemp -d)"
+RAW_TMP="$TMP_DIR/raw_snapshot.txt"
+STATE_TMP="$TMP_DIR/normalized_state.txt"
+DIFF_TMP="$TMP_DIR/state.diff"
+
+cleanup() { rm -rf "$TMP_DIR"; }
+trap cleanup EXIT
+
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
-collect_state() {
+json_escape() {
+  sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+now_iso() {
+  date '+%Y-%m-%dT%H:%M:%S%z' | sed 's/\([0-9][0-9]\)$/:\1/'
+}
+
+log_run() {
+  local status="$1" changed="$2" reason="$3" duration_ms="$4"
+  local ts
+  ts="$(now_iso)"
+  printf '{"ts":"%s","host":"%s","status":"%s","changed":%s,"duration_ms":%s,"reason":"%s"}\n' \
+    "$ts" "$HOSTNAME_FQDN" "$status" "$changed" "$duration_ms" "$(printf '%s' "$reason" | json_escape)" \
+    >> "$LOG_FILE"
+}
+
+send_mail() {
+  local subject="$1"
+  local body_file="$2"
+
+  if have_cmd mail; then
+    mail -s "$subject" -r "$MAIL_FROM" "$MAIL_TO" < "$body_file"
+    return
+  fi
+
+  if have_cmd sendmail; then
+    {
+      echo "From: $MAIL_FROM"
+      echo "To: $MAIL_TO"
+      echo "Subject: $subject"
+      echo
+      cat "$body_file"
+    } | sendmail -t
+    return
+  fi
+
+  echo "No mail command available (mail/sendmail)." >&2
+  return 1
+}
+
+collect_raw_snapshot() {
   {
     echo "===== RAID HEALTH SNAPSHOT ====="
-    echo "Timestamp: $(date -Is)"
+    echo "Timestamp: $(now_iso)"
     echo "Host: $HOSTNAME_FQDN"
     echo
 
@@ -73,64 +124,133 @@ collect_state() {
     else
       echo "smartctl not installed"
     fi
-  } > "$TMP_FILE"
+  } > "$RAW_TMP"
 }
 
-send_mail() {
-  local subject="$1"
-  local body_file="$2"
+build_normalized_state() {
+  {
+    echo "host=$HOSTNAME_FQDN"
 
-  if have_cmd mail; then
-    mail -s "$subject" -r "$MAIL_FROM" "$MAIL_TO" < "$body_file"
-    return
+    # mdstat degraded/recovery indicators only
+    if [[ -r /proc/mdstat ]]; then
+      awk '
+        /^md[0-9]+/ {arr=$1; line=$0; getline detail;
+          gsub(/^[ \t]+|[ \t]+$/, "", detail);
+          print "mdstat:" arr ":" line " | " detail
+        }
+      ' /proc/mdstat
+    fi
+
+    # mdadm normalized health lines
+    if have_cmd mdadm; then
+      mapfile -t md_arrays < <(awk '/^md[0-9]+/ {print $1}' /proc/mdstat 2>/dev/null || true)
+      for md in "${md_arrays[@]:-}"; do
+        [[ -n "$md" ]] || continue
+        mdadm --detail "/dev/$md" 2>/dev/null |
+          awk -v a="$md" '
+            /State *:/ {print "mdadm:" a ":state=" $0}
+            /Active Devices *:/ {print "mdadm:" a ":active=" $0}
+            /Working Devices *:/ {print "mdadm:" a ":working=" $0}
+            /Failed Devices *:/ {print "mdadm:" a ":failed=" $0}
+            /Spare Devices *:/ {print "mdadm:" a ":spare=" $0}
+            /Events *:/ {print "mdadm:" a ":events=" $0}
+          '
+      done
+    fi
+
+    # zpool important status only
+    if have_cmd zpool; then
+      zpool status -v 2>/dev/null |
+        awk '
+          /^  pool: / {pool=$2; print "zpool:" pool ":pool=" $0}
+          /^ state: / {print "zpool:" pool ":state=" $0}
+          /DEGRADED|FAULTED|UNAVAIL|OFFLINE|REMOVED|errors:/ {print "zpool:" pool ":signal=" $0}
+        '
+    fi
+
+    # SMART health only
+    if have_cmd smartctl && have_cmd lsblk; then
+      mapfile -t disks < <(lsblk -dn -o NAME,TYPE | awk '$2=="disk"{print "/dev/"$1}')
+      for d in "${disks[@]:-}"; do
+        [[ -n "$d" ]] || continue
+        smartctl -H "$d" 2>/dev/null |
+          awk -v d="$d" '/SMART overall-health|SMART Health Status|result/ {print "smart:" d ":" $0}'
+      done
+    fi
+  } | sed 's/[[:space:]]\+/ /g' | sed 's/ *$//' | sort -u > "$STATE_TMP"
+}
+
+validate_state() {
+  if [[ ! -s "$STATE_TMP" ]]; then
+    echo "normalized state is empty"
+    return 1
   fi
 
-  if have_cmd sendmail; then
-    {
-      echo "From: $MAIL_FROM"
-      echo "To: $MAIL_TO"
-      echo "Subject: $subject"
-      echo
-      cat "$body_file"
-    } | sendmail -t
-    return
+  if ! grep -Eq '^(mdstat:|mdadm:|zpool:|smart:|host=)' "$STATE_TMP"; then
+    echo "normalized state missing expected keys"
+    return 1
   fi
 
-  echo "No mail command available (mail/sendmail)." >&2
-  return 1
+  return 0
 }
 
 main() {
-  collect_state
+  local start_ns end_ns duration_ms
+  start_ns="$(date +%s%N 2>/dev/null || date +%s000000000)"
+
+  collect_raw_snapshot
+  build_normalized_state
+
+  if ! validate_state; then
+    cp "$RAW_TMP" "$RAW_FILE"
+    cp "$STATE_TMP" "$STATE_FILE.invalid" 2>/dev/null || true
+    end_ns="$(date +%s%N 2>/dev/null || date +%s000000000)"
+    duration_ms=$(( (end_ns - start_ns) / 1000000 ))
+    log_run "error" false "validation_failed" "$duration_ms"
+    exit 1
+  fi
 
   if [[ ! -f "$STATE_FILE" ]]; then
-    cp "$TMP_FILE" "$STATE_FILE"
-    echo "Initial RAID state saved to $STATE_FILE"
-    rm -f "$TMP_FILE"
+    cp "$STATE_TMP" "$STATE_FILE"
+    cp "$RAW_TMP" "$RAW_FILE"
+    end_ns="$(date +%s%N 2>/dev/null || date +%s000000000)"
+    duration_ms=$(( (end_ns - start_ns) / 1000000 ))
+    log_run "ok" false "baseline_created" "$duration_ms"
+    echo "Initial normalized RAID state saved to $STATE_FILE"
     exit 0
   fi
 
-  if ! diff -u "$STATE_FILE" "$TMP_FILE" >/tmp/raid_state_diff.$$ 2>&1; then
+  if ! diff -u "$STATE_FILE" "$STATE_TMP" > "$DIFF_TMP" 2>&1; then
     {
       echo "RAID/disk health state changed on $HOSTNAME_FQDN"
-      echo "Time: $(date -Is)"
+      echo "Time: $(now_iso)"
       echo
-      echo "===== DIFF ====="
-      cat /tmp/raid_state_diff.$$
+      echo "===== NORMALIZED DIFF ====="
+      cat "$DIFF_TMP"
       echo
-      echo "===== NEW SNAPSHOT ====="
-      cat "$TMP_FILE"
-    } > /tmp/raid_alert_body.$$
+      echo "===== NEW NORMALIZED STATE ====="
+      cat "$STATE_TMP"
+      echo
+      echo "===== NEW RAW SNAPSHOT ====="
+      cat "$RAW_TMP"
+    } > "$ALERT_BODY_FILE"
 
-    send_mail "$SUBJECT_PREFIX $HOSTNAME_FQDN state changed" /tmp/raid_alert_body.$$ || true
+    send_mail "$SUBJECT_PREFIX $HOSTNAME_FQDN state changed" "$ALERT_BODY_FILE" || true
 
-    cp "$TMP_FILE" "$STATE_FILE"
-    rm -f /tmp/raid_state_diff.$$ /tmp/raid_alert_body.$$ "$TMP_FILE"
-    exit 0
-  else
-    rm -f /tmp/raid_state_diff.$$ "$TMP_FILE"
+    cp "$STATE_TMP" "$STATE_FILE"
+    cp "$RAW_TMP" "$RAW_FILE"
+
+    end_ns="$(date +%s%N 2>/dev/null || date +%s000000000)"
+    duration_ms=$(( (end_ns - start_ns) / 1000000 ))
+    log_run "ok" true "state_changed" "$duration_ms"
     exit 0
   fi
+
+  cp "$RAW_TMP" "$RAW_FILE"
+  end_ns="$(date +%s%N 2>/dev/null || date +%s000000000)"
+  duration_ms=$(( (end_ns - start_ns) / 1000000 ))
+  log_run "ok" false "no_change" "$duration_ms"
+  exit 0
 }
 
 main "$@"

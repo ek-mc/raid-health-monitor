@@ -1,0 +1,3 @@
+{"ts":"2026-03-01T10:00:00+02:00","host":"nas-01","status":"ok","changed":false,"duration_ms":95,"reason":"baseline_created"}
+{"ts":"2026-03-01T10:10:00+02:00","host":"nas-01","status":"ok","changed":false,"duration_ms":84,"reason":"no_change"}
+{"ts":"2026-03-01T10:20:00+02:00","host":"nas-01","status":"ok","changed":true,"duration_ms":111,"reason":"state_changed"}

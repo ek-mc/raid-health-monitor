@@ -2,15 +2,21 @@
 
 Simple Bash monitor for RAID / disk health state changes.
 
-It snapshots current storage health, compares with last snapshot, and sends email **only when state changes**.
+It snapshots storage health, builds a **normalized health state**, compares with last known good state, and sends email only when the normalized state changes.
 
 ## What it checks
 
-- `/proc/mdstat`
-- `mdadm --detail` (if mdadm exists)
-- `zpool status -v` (if ZFS exists)
-- `lsblk` device overview
-- `smartctl -H` quick SMART health (if smartctl exists)
+- `/proc/mdstat` (array status/recovery signals)
+- `mdadm --detail` health fields (if mdadm exists)
+- `zpool status -v` critical state signals (if ZFS exists)
+- `smartctl -H` quick SMART status (if smartctl exists)
+
+## Key improvements (v2)
+
+- ✅ Normalized diff (avoids false alerts from timestamp-only changes)
+- ✅ Validation layer before compare/send
+- ✅ JSONL observability log per run (`runs.jsonl`)
+- ✅ Raw snapshot + normalized state persisted for debugging
 
 ## Script
 
@@ -18,12 +24,20 @@ It snapshots current storage health, compares with last snapshot, and sends emai
 
 ## Configure
 
-Edit these variables at the top of the script:
+You can override via environment variables (recommended):
 
-- `MAIL_TO="you@example.com"`  ← change this
-- optionally `MAIL_FROM`, `SUBJECT_PREFIX`, `STATE_DIR`
+- `MAIL_TO` (required for useful alerts)
+- `MAIL_FROM`
+- `SUBJECT_PREFIX`
+- `STATE_DIR` (default: `/var/lib/raid-health-monitor`)
 
-## Install (recommended)
+Example:
+
+```bash
+MAIL_TO="you@example.com" /usr/local/bin/raid-health-monitor.sh
+```
+
+## Install
 
 ```bash
 sudo cp raid-health-monitor.sh /usr/local/bin/raid-health-monitor.sh
@@ -33,12 +47,13 @@ sudo chmod +x /usr/local/bin/raid-health-monitor.sh
 ## First run
 
 ```bash
-sudo /usr/local/bin/raid-health-monitor.sh
+sudo MAIL_TO="you@example.com" /usr/local/bin/raid-health-monitor.sh
 ```
 
-First run creates baseline state at:
+First run creates baseline:
 
-- `/var/lib/raid-health-monitor/last_state.txt`
+- `last_state.txt` (normalized state baseline)
+- `last_raw_snapshot.txt` (raw diagnostic snapshot)
 
 No email is sent on first run.
 
@@ -48,26 +63,35 @@ No email is sent on first run.
 sudo crontab -e
 ```
 
-Add:
-
 ```cron
-*/10 * * * * /usr/local/bin/raid-health-monitor.sh
+*/10 * * * * MAIL_TO="you@example.com" /usr/local/bin/raid-health-monitor.sh
 ```
+
+## Validation + observability files
+
+Under `STATE_DIR`:
+
+- `last_state.txt` → normalized baseline used for diff
+- `last_raw_snapshot.txt` → last raw snapshot
+- `last_alert_body.txt` → most recent email body
+- `runs.jsonl` → one JSON line per run (status, duration, reason)
 
 ## Mail requirements
 
-You need at least one of:
+Need one of:
 
 - `mail` command (`mailx`), or
 - `sendmail`
 
-## Notes
-
-- The RAID monitor alerts on **any snapshot difference**, so timestamp/content changes can trigger email.
-- If you want a quieter version (ignore timestamp-only changes), adapt the snapshot comparison section.
-
-## Quick test for alert
+## Quick test
 
 1. Run once (baseline)
-2. Temporarily edit script output content (or unplug a non-critical disk on test machine)
-3. Run again and confirm alert email arrives
+2. Simulate state change (lab/test machine)
+3. Run again
+4. Confirm alert email + `runs.jsonl` changed=`true`
+
+## Security notes
+
+- Script runs local commands only.
+- Does not send data externally except alert email via local mail/sendmail.
+- Keep `STATE_DIR` permissions restricted (`root:root`, mode `700/750`).
