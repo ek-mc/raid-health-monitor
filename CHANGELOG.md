@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+- GitHub Actions CI workflow (`bash -n` + smoke test)
+- `SECURITY.md` policy
+- Baseline `.gitignore` for secrets/local artifacts
+
 ## [0.2.0] - 2026-03-01
 
 ### Added

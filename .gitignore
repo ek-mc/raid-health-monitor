@@ -1,0 +1,16 @@
+# Secrets / env
+.env
+.env.*
+*.env
+
+# Local state/output from running monitor
+state/
+*.log
+*.jsonl
+
+# macOS
+.DS_Store
+
+# Temporary files
+*.tmp
+*.swp

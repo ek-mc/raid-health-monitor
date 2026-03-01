@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  shell-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Bash syntax check
+        run: bash -n raid-health-monitor.sh
+
+      - name: Make smoke test executable
+        run: chmod +x tests/smoke.sh
+
+      - name: Run smoke test
+        run: ./tests/smoke.sh
