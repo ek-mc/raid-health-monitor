@@ -9,6 +9,7 @@
 ## [Unreleased]
 
 ### Added
+- Documented GitHub Actions workflows in README.
 - GitHub Actions CI workflow (`bash -n` + smoke test)
 - `SECURITY.md` policy
 - Baseline `.gitignore` for secrets/local artifacts
