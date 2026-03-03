@@ -107,3 +107,12 @@ This repo includes one workflow:
     - `tests/smoke.sh` smoke test run on Ubuntu
 
 You can view workflow runs in the repository **Actions** tab on GitHub.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
+
