@@ -95,3 +95,15 @@ Need one of:
 - Script runs local commands only.
 - Does not send data externally except alert email via local mail/sendmail.
 - Keep `STATE_DIR` permissions restricted (`root:root`, mode `700/750`).
+
+## Automation (GitHub Actions)
+
+This repo includes one workflow:
+
+- **CI** (`.github/workflows/ci.yml`)
+  - Triggers: push to `main`, and pull requests
+  - Checks:
+    - `bash -n raid-health-monitor.sh` (syntax)
+    - `tests/smoke.sh` smoke test run on Ubuntu
+
+You can view workflow runs in the repository **Actions** tab on GitHub.
