@@ -1,22 +1,28 @@
 # RAID Health Monitor
 
-Simple Bash monitor for RAID / disk health state changes.
+Status: Active | Last release: v0.2.0 | Last update: 2026-03-09 | Live: https://github.com/ek-mc/raid-health-monitor
 
-It snapshots storage health, builds a **normalized health state**, compares with last known good state, and sends email only when the normalized state changes.
+Bash RAID monitor with **health scoring**, **severity-based alerts**, and **alert dedupe/cooldown**.
+
+It checks mdadm/ZFS/SMART, creates a normalized snapshot, and sends email only when meaningful health state changes (or periodic reminders while unhealthy).
 
 ## What it checks
 
-- `/proc/mdstat` (array status/recovery signals)
-- `mdadm --detail` health fields (if mdadm exists)
-- `zpool status -v` critical state signals (if ZFS exists)
-- `smartctl -H` quick SMART status (if smartctl exists)
+- `/proc/mdstat`
+- `mdadm --detail` (if mdadm exists)
+- `zpool status -v` (if ZFS exists)
+- `lsblk` device overview
+- `smartctl -H` and key SMART attributes (5, 190/194, 197, 198, 199)
 
-## Key improvements (v2)
+## New in v0.2.0
 
-- ✅ Normalized diff (avoids false alerts from timestamp-only changes)
-- ✅ Validation layer before compare/send
-- ✅ JSONL observability log per run (`runs.jsonl`)
-- ✅ Raw snapshot + normalized state persisted for debugging
+- Health score (0–100)
+- Severity classification: `healthy | warning | critical`
+- Issue list + runbook hints in alert emails
+- Timestamp-insensitive snapshot comparison (less noise)
+- Alert dedupe with cooldown windows
+- Periodic reminder while unhealthy
+- Lock file to prevent overlapping runs
 
 ## Script
 
@@ -24,18 +30,15 @@ It snapshots storage health, builds a **normalized health state**, compares with
 
 ## Configure
 
-You can override via environment variables (recommended):
+Edit variables at top of script:
 
-- `MAIL_TO` (required for useful alerts)
-- `MAIL_FROM`
-- `SUBJECT_PREFIX`
-- `STATE_DIR` (default: `/var/lib/raid-health-monitor`)
-
-Example:
-
-```bash
-MAIL_TO="you@example.com" /usr/local/bin/raid-health-monitor.sh
-```
+- `MAIL_TO="you@example.com"` (required)
+- `MAIL_FROM`, `SUBJECT_PREFIX`
+- Thresholds:
+  - `MAX_TEMP_WARN`, `MAX_TEMP_CRIT`
+  - `SMART_REALLOC_WARN`, `SMART_PENDING_WARN`, `SMART_UNCORR_WARN`, `SMART_CRC_WARN`
+- Alert behavior:
+  - `WARN_COOLDOWN_SEC`, `CRIT_COOLDOWN_SEC`, `UNCHANGED_REMINDER_SEC`
 
 ## Install
 
@@ -47,15 +50,16 @@ sudo chmod +x /usr/local/bin/raid-health-monitor.sh
 ## First run
 
 ```bash
-sudo MAIL_TO="you@example.com" /usr/local/bin/raid-health-monitor.sh
+sudo /usr/local/bin/raid-health-monitor.sh
 ```
 
-First run creates baseline:
+Creates baseline in:
 
-- `last_state.txt` (normalized state baseline)
-- `last_raw_snapshot.txt` (raw diagnostic snapshot)
+- `/var/lib/raid-health-monitor/last_snapshot_raw.txt`
+- `/var/lib/raid-health-monitor/last_snapshot_normalized.txt`
+- `/var/lib/raid-health-monitor/alert_state.env`
 
-No email is sent on first run.
+No noisy alert spam on baseline creation.
 
 ## Cron (every 10 min)
 
@@ -63,60 +67,30 @@ No email is sent on first run.
 sudo crontab -e
 ```
 
+Add:
+
 ```cron
-*/10 * * * * MAIL_TO="you@example.com" /usr/local/bin/raid-health-monitor.sh
+*/10 * * * * /usr/local/bin/raid-health-monitor.sh
 ```
-
-## Validation + observability files
-
-Under `STATE_DIR`:
-
-- `last_state.txt` → normalized baseline used for diff
-- `last_raw_snapshot.txt` → last raw snapshot
-- `last_alert_body.txt` → most recent email body
-- `runs.jsonl` → one JSON line per run (status, duration, reason)
 
 ## Mail requirements
 
-Need one of:
+Need at least one of:
 
 - `mail` command (`mailx`), or
 - `sendmail`
 
+## Notes
+
+- Alerts are sent on meaningful changes, not timestamp-only differences.
+- Recovery (`warning/critical -> healthy`) triggers a recovery email.
+- While unhealthy, reminders are rate-limited by cooldown/reminder settings.
+
 ## Quick test
 
-1. Run once (baseline)
-2. Simulate state change (lab/test machine)
-3. Run again
-4. Confirm alert email + `runs.jsonl` changed=`true`
-
-## Security notes
-
-- Script runs local commands only.
-- Does not send data externally except alert email via local mail/sendmail.
-- Keep `STATE_DIR` permissions restricted (`root:root`, mode `700/750`).
-
-## Automation (GitHub Actions)
-
-This repo includes one workflow:
-
-- **CI** (`.github/workflows/ci.yml`)
-  - Triggers: push to `main`, and pull requests
-  - Checks:
-    - `bash -n raid-health-monitor.sh` (syntax)
-    - `tests/smoke.sh` smoke test run on Ubuntu
-
-You can view workflow runs in the repository **Actions** tab on GitHub.
-
-## License
-
-MIT. See [LICENSE](LICENSE).
-
-## Changelog
-
-See [CHANGELOG.md](CHANGELOG.md).
-
-## Support
-
-For issues, use [GitHub Issues](https://github.com/ek-mc/raid-health-monitor/issues).
-- `ci.yml`
+1. Run once to create baseline
+2. Temporarily force a known issue (lab environment only)
+3. Run again and confirm alert email includes:
+   - severity + score
+   - issue list
+   - suggested next steps
