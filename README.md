@@ -1,6 +1,6 @@
 # RAID Health Monitor
 
-Status: Active | Last release: v0.2.0 | Last update: 2026-03-09 | Live: https://github.com/ek-mc/raid-health-monitor
+Status: Active | Last release: v0.2.0 | Last update: 2026-03-09
 
 Bash RAID monitor with **health scoring**, **severity-based alerts**, and **alert dedupe/cooldown**.
 
