@@ -16,8 +16,9 @@ bash -n "$ROOT_DIR/raid-health-monitor.sh"
 [[ -f "$STATE_DIR/last_state.txt" ]]
 [[ -f "$STATE_DIR/last_raw_snapshot.txt" ]]
 [[ -f "$STATE_DIR/runs.jsonl" ]]
+[[ -f "$STATE_DIR/last_issue_fingerprint.txt" ]]
 
-# Follow-up run should also pass and append log
+# Follow-up run should append log
 before_lines=$(wc -l < "$STATE_DIR/runs.jsonl")
 "$ROOT_DIR/raid-health-monitor.sh" >/dev/null
 after_lines=$(wc -l < "$STATE_DIR/runs.jsonl")

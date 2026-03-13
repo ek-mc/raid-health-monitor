@@ -1,0 +1,10 @@
+[Unit]
+Description=RAID Health Monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/raid-health-monitor.sh
+EnvironmentFile=-/etc/raid-health-monitor.conf
+Nice=10

@@ -2,40 +2,39 @@
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-03-09
-
 ### Added
-- Health scoring model (0–100)
-- Severity classification (`healthy`, `warning`, `critical`)
-- Runbook-style remediation hints in alert emails
-- SMART attribute checks for key risk signals (5, 190/194, 197, 198, 199)
-- Alert dedupe state (`alert_state.env`) and lock-file guard (`monitor.lock`)
+- External config loading (`/etc/raid-health-monitor.conf` + optional `./raid-health-monitor.conf` + `--config`)
+- Multi-channel notifications (mail, Telegram, Slack, Discord) via `NOTIFY_CHANNELS`
+- JSON output mode (`--json`) for machine-readable summaries
+- Self-test and dry-run modes (`--self-test warning|critical`, `--dry-run`)
+- Issue-set persistence (`last_issues.txt`) and fingerprint state (`last_issue_fingerprint.txt`)
+- Systemd examples:
+  - `systemd/raid-health-monitor.service`
+  - `systemd/raid-health-monitor.timer`
+  - `examples/raid-health-monitor.conf.example`
+- Expanded shell tests (`tests/logic.sh`)
 
 ### Changed
-- Snapshot comparison now uses normalized state to reduce noisy alerts
-- Alert flow now supports cooldown windows + periodic unhealthy reminders
-- README updated with v0.2.0 configuration and behavior
+- SMART discovery now combines `lsblk` disks and `smartctl --scan-open` targets for better controller-backed coverage
+- Alert dedupe now keys on stable normalized issue fingerprint hash instead of raw state diff churn
+- Run logs now include severity, issue_count, and fingerprint
 
 ### Fixed
-- Avoided duplicate alerts from timestamp-only changes
-- Reduced repeated noise during unchanged unhealthy states
+- Reduced noisy repeat alerts for unchanged issue conditions
 
-## [0.1.0] - 2026-03-05
-
-### Added
-- Initial public release
-- RAID state snapshots + diff-based email alerting
-- mdadm, zpool, lsblk, and SMART quick-status collection
-
-## [0.0.1] - 2026-03-04
+## [0.2.0] - 2026-03-01
 
 ### Added
-- Documented GitHub Actions workflows in README
-- GitHub Actions CI workflow (`bash -n` + smoke test)
-- `SECURITY.md` policy
-- Baseline `.gitignore` for secrets/local artifacts
+- Normalized health-state comparison (`last_state.txt`) instead of full raw diff
+- Validation step before compare/send
+- JSONL run observability log (`runs.jsonl`)
+- Persisted raw snapshot (`last_raw_snapshot.txt`)
+- Persisted latest alert body (`last_alert_body.txt`)
+- `CONTRIBUTING.md` and basic smoke tests
 
-## [0.0.0] - 2026-03-04
+### Changed
+- Email alert now includes normalized diff + raw snapshot
+- Config now supports env overrides for all key paths and mail fields
 
-### Added
-- Added MIT `LICENSE` file
+### Fixed
+- Eliminated false-positive alerts caused by timestamp-only snapshot changes

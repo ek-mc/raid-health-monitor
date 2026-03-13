@@ -1,44 +1,34 @@
 # RAID Health Monitor
 
-Status: Active | Last release: v0.2.0 | Last update: 2026-03-09
+Bash monitor for RAID / disk health with **issue-level dedupe**.
 
-Bash RAID monitor with **health scoring**, **severity-based alerts**, and **alert dedupe/cooldown**.
+It collects storage state, normalizes it, derives a stable issue set, hashes that set, and only alerts when the issue fingerprint changes (instead of noisy snapshot diffs).
 
-It checks mdadm/ZFS/SMART, creates a normalized snapshot, and sends email only when meaningful health state changes (or periodic reminders while unhealthy).
+## Highlights
+
+- External config support:
+  - `/etc/raid-health-monitor.conf`
+  - optional local override `./raid-health-monitor.conf`
+  - optional `--config /path/to/file`
+- Better SMART target discovery:
+  - native block disks from `lsblk`
+  - controller-backed targets via `smartctl --scan-open` (e.g. `-d megaraid,N`)
+- Alert dedupe via stable issue fingerprint hash
+- Multi-channel notifications (config-driven):
+  - mail (existing)
+  - Telegram webhook/bot API
+  - Slack webhook
+  - Discord webhook
+- `--json` mode for machine-readable output
+- `--self-test warning|critical` and `--dry-run` for testing pipelines
+- Systemd unit/timer examples included
 
 ## What it checks
 
 - `/proc/mdstat`
-- `mdadm --detail` (if mdadm exists)
-- `zpool status -v` (if ZFS exists)
-- `lsblk` device overview
-- `smartctl -H` and key SMART attributes (5, 190/194, 197, 198, 199)
-
-## New in v0.2.0
-
-- Health score (0–100)
-- Severity classification: `healthy | warning | critical`
-- Issue list + runbook hints in alert emails
-- Timestamp-insensitive snapshot comparison (less noise)
-- Alert dedupe with cooldown windows
-- Periodic reminder while unhealthy
-- Lock file to prevent overlapping runs
-
-## Script
-
-- `raid-health-monitor.sh`
-
-## Configure
-
-Edit variables at top of script:
-
-- `MAIL_TO="you@example.com"` (required)
-- `MAIL_FROM`, `SUBJECT_PREFIX`
-- Thresholds:
-  - `MAX_TEMP_WARN`, `MAX_TEMP_CRIT`
-  - `SMART_REALLOC_WARN`, `SMART_PENDING_WARN`, `SMART_UNCORR_WARN`, `SMART_CRC_WARN`
-- Alert behavior:
-  - `WARN_COOLDOWN_SEC`, `CRIT_COOLDOWN_SEC`, `UNCHANGED_REMINDER_SEC`
+- `mdadm --detail` (if available)
+- `zpool status -v` (if available)
+- `smartctl -H` quick checks across discovered targets
 
 ## Install
 
@@ -47,50 +37,123 @@ sudo cp raid-health-monitor.sh /usr/local/bin/raid-health-monitor.sh
 sudo chmod +x /usr/local/bin/raid-health-monitor.sh
 ```
 
-## First run
+## Basic usage
 
 ```bash
-sudo /usr/local/bin/raid-health-monitor.sh
+sudo MAIL_TO="you@example.com" /usr/local/bin/raid-health-monitor.sh
 ```
 
-Creates baseline in:
+First run creates baseline/state files and does not alert.
 
-- `/var/lib/raid-health-monitor/last_snapshot_raw.txt`
-- `/var/lib/raid-health-monitor/last_snapshot_normalized.txt`
-- `/var/lib/raid-health-monitor/alert_state.env`
+## CLI options
 
-No noisy alert spam on baseline creation.
+```text
+--config <path>            Load extra config file
+--json                     Print JSON summary to stdout
+--dry-run                  No state writes, no notifications
+--self-test warning        Simulate warning condition
+--self-test critical       Simulate critical condition
+```
 
-## Cron (every 10 min)
+## Configuration
+
+Create `/etc/raid-health-monitor.conf`:
 
 ```bash
-sudo crontab -e
+# Notification channels (comma-separated): mail,telegram,slack,discord
+NOTIFY_CHANNELS="mail,telegram"
+
+MAIL_TO="ops@example.com"
+MAIL_FROM="raid-monitor@example.com"
+SUBJECT_PREFIX="[RAID ALERT]"
+
+# Telegram option A: generic webhook URL
+# TELEGRAM_WEBHOOK_URL="https://example.com/telegram-webhook"
+
+# Telegram option B: native bot API
+# TELEGRAM_BOT_TOKEN="123456:ABCDEF"
+# TELEGRAM_CHAT_ID="-1001234567890"
+
+# Slack/Discord webhooks
+# SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
+# DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
+
+# State paths
+STATE_DIR="/var/lib/raid-health-monitor"
+
+# Optional smartctl extras
+# SMARTCTL_EXTRA_ARGS="-n standby"
+
+# Send notifications also on recovery fingerprint changes
+SEND_RECOVERY_NOTIFICATIONS="false"
 ```
 
-Add:
+Optional local override in current working directory:
 
-```cron
-*/10 * * * * /usr/local/bin/raid-health-monitor.sh
+```bash
+./raid-health-monitor.conf
 ```
 
-## Mail requirements
+## JSON output example
 
-Need at least one of:
+```bash
+./raid-health-monitor.sh --json
+```
 
-- `mail` command (`mailx`), or
-- `sendmail`
+Example output:
 
-## Notes
+```json
+{"ts":"2026-03-14T00:00:00+02:00","host":"node1","status":"ok","severity":"ok","changed":false,"reason":"no_change","issue_count":0,"fingerprint":"...","issues":["ok"]}
+```
 
-- Alerts are sent on meaningful changes, not timestamp-only differences.
-- Recovery (`warning/critical -> healthy`) triggers a recovery email.
-- While unhealthy, reminders are rate-limited by cooldown/reminder settings.
+## Self-test examples
 
-## Quick test
+```bash
+# simulate warning issue set
+./raid-health-monitor.sh --self-test warning --json --dry-run
 
-1. Run once to create baseline
-2. Temporarily force a known issue (lab environment only)
-3. Run again and confirm alert email includes:
-   - severity + score
-   - issue list
-   - suggested next steps
+# simulate critical issue set
+./raid-health-monitor.sh --self-test critical --json --dry-run
+```
+
+## State/observability files
+
+Under `STATE_DIR`:
+
+- `last_state.txt` → normalized baseline state
+- `last_raw_snapshot.txt` → latest raw diagnostic snapshot
+- `last_issues.txt` → latest normalized issue set
+- `last_issue_fingerprint.txt` → latest issue fingerprint hash
+- `last_alert_body.txt` → latest composed alert body
+- `runs.jsonl` → structured run log
+
+## Systemd (recommended)
+
+Example files:
+
+- `systemd/raid-health-monitor.service`
+- `systemd/raid-health-monitor.timer`
+- `examples/raid-health-monitor.conf.example`
+
+Install quickly:
+
+```bash
+sudo cp systemd/raid-health-monitor.service /etc/systemd/system/
+sudo cp systemd/raid-health-monitor.timer /etc/systemd/system/
+sudo cp examples/raid-health-monitor.conf.example /etc/raid-health-monitor.conf
+sudo systemctl daemon-reload
+sudo systemctl enable --now raid-health-monitor.timer
+```
+
+## Tests
+
+```bash
+tests/smoke.sh
+tests/logic.sh
+```
+
+## Security notes
+
+- Runs local commands only.
+- External traffic only for configured notification channels.
+- Keep `STATE_DIR` restricted (`root:root`, `700/750`).

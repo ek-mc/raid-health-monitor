@@ -1,0 +1,18 @@
+# raid-health-monitor example config
+
+NOTIFY_CHANNELS="mail"
+MAIL_TO="you@example.com"
+MAIL_FROM="raid-monitor@example.com"
+SUBJECT_PREFIX="[RAID ALERT]"
+
+# Optional webhooks / chat notifications:
+# NOTIFY_CHANNELS="mail,telegram,slack,discord"
+# TELEGRAM_WEBHOOK_URL="https://example.com/telegram-webhook"
+# TELEGRAM_BOT_TOKEN="123456:ABCDEF"
+# TELEGRAM_CHAT_ID="-1001234567890"
+# SLACK_WEBHOOK_URL="https://hooks.slack.com/services/..."
+# DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
+
+STATE_DIR="/var/lib/raid-health-monitor"
+# SMARTCTL_EXTRA_ARGS="-n standby"
+SEND_RECOVERY_NOTIFICATIONS="false"
