@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-03-14
+
+### Added
+- Layered external config loading:
+  - `/etc/raid-health-monitor.conf`
+  - local `./raid-health-monitor.conf`
+  - optional `--config <path>`
+- Multi-channel notifications via `NOTIFY_CHANNELS`:
+  - `mail`, `telegram`, `slack`, `discord`
+- Telegram delivery via either webhook URL or Bot API token/chat ID.
+- Systemd deployment examples:
+  - `systemd/raid-health-monitor.service`
+  - `systemd/raid-health-monitor.timer`
+- Config template: `examples/raid-health-monitor.conf.example`.
+- Logic test suite (`tests/logic.sh`) for JSON/self-test/dry-run/fingerprint behavior.
+
+### Changed
+- SMART target discovery now combines `lsblk` disks with `smartctl --scan-open` targets (improves NVMe/controller-backed coverage).
+- Alert dedupe now uses stable issue fingerprint hashing to reduce alert churn from non-semantic snapshot differences.
+- README expanded with new CLI flags, notification channels, and systemd usage.
+
+### Fixed
+- Reduced repeated notifications when underlying issue set has not changed.
+- Improved reliability of health-state transitions by comparing normalized issue sets.
+
 ## [0.2.0] - 2026-03-09
 
 ### Added
